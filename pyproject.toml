@@ -1,0 +1,96 @@
+# Copyright 2026 Stereolabs. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# LeRobot imports third-party plugins by their *distribution name*, verbatim, so this must stay
+# spelled with underscores and match the package directory exactly.
+name = "lerobot_camera_zed"
+version = "0.1.0"
+description = "Stereolabs ZED camera plugin for LeRobot (ZED 2/2i/Mini, ZED X / X Mini / X HDR, ZED X One)"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"  # follows lerobot
+authors = [{ name = "Stereolabs", email = "support@stereolabs.com" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+keywords = ["lerobot", "zed", "stereolabs", "camera", "depth", "robotics"]
+
+# `pyzed` is deliberately absent: it ships with the ZED SDK installer, not PyPI, and the
+# unrelated PyPI project of that name would be installed in its place. The backend probes for
+# it at import time and raises an install hint from connect() when it is missing.
+# 0.6.0 is the oldest version this plugin is tested against (hardware-verified on a
+# Jetson AGX Orin), not a guess.
+dependencies = ["lerobot>=0.6.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "draccus>=0.10"]
+
+[project.urls]
+homepage = "https://www.stereolabs.com"
+source = "https://github.com/stereolabs/lerobot_camera_zed"
+issues = "https://github.com/stereolabs/lerobot_camera_zed/issues"
+documentation = "https://www.stereolabs.com/docs"
+
+[project.scripts]
+# `lerobot-find-cameras` only knows the backends shipped in LeRobot itself, so ZED discovery
+# needs its own entry point.
+lerobot-find-zed-cameras = "lerobot_camera_zed.find_cameras:main"
+lerobot-zed-export = "lerobot_camera_zed.svo_export:main"
+
+[tool.setuptools.packages.find]
+include = ["lerobot_camera_zed*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "T20", "N", "UP", "SIM", "D"]
+ignore = [
+    "E501", # Line too long
+    "T201", # Print statement found
+    "T203", # Pprint statement found
+    "B008", # Perform function call in argument defaults
+    "D105", # Missing docstring in magic method (documented on the class)
+    "D107", # Missing docstring in __init__ (documented on the class)
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403", "E402", "D104"]
+"tests/**" = ["D"]
+"examples/**" = ["D"]
+
+[tool.mypy]
+python_version = "3.12"
+# Matches how LeRobot type-checks its own camera backends: the base `Camera` class is not
+# followed, so subclasses re-declare the inherited attributes locally.
+follow_imports = "skip"
+ignore_missing_imports = true
+files = ["lerobot_camera_zed"]

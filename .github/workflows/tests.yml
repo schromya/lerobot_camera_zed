@@ -1,0 +1,79 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff==0.16.9
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor is the oldest LeRobot this plugin is tested against; `latest` catches
+        # upstream renames in the `Camera` ABC and the helpers we import, which is the main
+        # ongoing risk for an out-of-tree backend.
+        lerobot-version: ["0.6.0", "latest"]
+        python-version: ["3.12"]
+        include:
+          - lerobot-version: "latest"
+            python-version: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install LeRobot
+        run: |
+          if [ "${{ matrix.lerobot-version }}" = "latest" ]; then
+            pip install lerobot
+          else
+            pip install "lerobot==${{ matrix.lerobot-version }}"
+          fi
+      # No ZED SDK here on purpose: `pyzed` ships with the SDK installer, never PyPI. The suite
+      # runs against tests/mock_pyzed.py, so it must stay green with no SDK and no hardware.
+      - name: Install the plugin
+        run: pip install -e ".[test]"
+      - name: Check the plugin is auto-discovered by LeRobot
+        run: |
+          python - <<'PY'
+          import draccus
+          from lerobot.cameras.configs import CameraConfig
+          from lerobot.utils.import_utils import register_third_party_plugins
+
+          register_third_party_plugins()
+          for camera_type in ("zed", "zed_one"):
+              cfg = draccus.decode(CameraConfig, {"type": camera_type, "serial_number": 1})
+              print(camera_type, "->", type(cfg).__name__)
+          PY
+      - run: pytest -v
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install lerobot mypy==2.3.1
+      - run: pip install -e .
+      - run: mypy
