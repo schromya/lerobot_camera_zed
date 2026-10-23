@@ -329,6 +329,7 @@ def record_episode(
                 "serial_number": getattr(configs[key], "serial_number", None),
                 "width": cams[key].width,
                 "height": cams[key].height,
+                "rotation": int(getattr(configs[key], "rotation", 0)),
                 "fps": cams[key].fps,
                 "svo_compression": getattr(configs[key], "svo_compression", None),
             }
@@ -373,6 +374,22 @@ def _load_manifest_timestamps(manifest_path: str, image_key: str) -> list[tuple[
     return pairs
 
 
+def _load_manifest_frame_geometry(manifest_path: str, image_key: str) -> tuple[Any, int | None]:
+    """Return (sl.Resolution, cv2 rotation code) that make replayed depth match one key's dataset frames."""
+    from lerobot.cameras.configs import Cv2Rotation
+    from lerobot.cameras.utils import get_cv2_rotation
+
+    m = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    cam_meta = m.get("cameras", {}).get(image_key, {})
+    if "rotation" not in cam_meta or not cam_meta.get("width") or not cam_meta.get("height"):
+        return None, None
+    rotation = get_cv2_rotation(Cv2Rotation(cam_meta["rotation"]))
+    w, h = int(cam_meta["width"]), int(cam_meta["height"])
+    if rotation in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE):
+        w, h = h, w  # the SDK hands out the frame before rotation
+    return sl.Resolution(w, h), rotation
+
+
 def export_depth_from_svo(
     svo_path: str,
     out_dir: str,
@@ -390,11 +407,13 @@ def export_depth_from_svo(
     With ``manifest`` (``meta/zed_sources.json``): each SVO frame is matched to the dataset frame with
     the nearest hardware timestamp for ``image_key`` and written as ``depth_<frame_index>.png`` —
     required for ``record_episode`` datasets, where cameras grab at full rate independently of the
-    dataset loop.
+    dataset loop. Depth is also resized and rotated to match that key's dataset frames.
     """
     _require_pyzed()
     ts_targets = None
+    out_size, rotation = None, None
     if manifest is not None:
+        out_size, rotation = _load_manifest_frame_geometry(manifest, image_key)
         pairs = _load_manifest_timestamps(manifest, image_key)
         target_idx = np.array([p[0] for p in pairs])
         target_ts = np.array([p[1] for p in pairs], dtype=np.int64)
@@ -439,11 +458,13 @@ def export_depth_from_svo(
             else:
                 name = f"depth_{pos:06d}.png"
             # uint16 mm, invalid already 0
-            cam.retrieve_measure(depth, sl.MEASURE.DEPTH_U16_MM)
+            cam.retrieve_measure(depth, sl.MEASURE.DEPTH_U16_MM, resolution=out_size)
             d = depth.get_data()
             if d.size == 0:  # retrieve_measure yields an empty Mat if depth is unavailable
                 logger.warning(f"empty depth measure at svo position {pos}; skipping frame")
                 continue
+            if rotation is not None:
+                d = cv2.rotate(d, rotation)
             cv2.imwrite(str(out / name), d)
             nz = d[d > 0]
             if nz.size:
