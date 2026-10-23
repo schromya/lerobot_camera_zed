@@ -120,6 +120,7 @@ class ZedCameraBase(Camera, abc.ABC):
         self.rotation: int | None = get_cv2_rotation(config.rotation)
         self.capture_width: int | None = None
         self.capture_height: int | None = None
+        self.capture_resolution: Any | None = None
         self.intrinsics: dict[str, float] | None = None
         self._reset_connection_settings()
 
@@ -157,6 +158,7 @@ class ZedCameraBase(Camera, abc.ABC):
         self.width = self.config.width
         self.height = self.config.height
         self.capture_width = self.capture_height = None
+        self.capture_resolution = None
         self.intrinsics = None
 
     @property
@@ -293,35 +295,48 @@ class ZedCameraBase(Camera, abc.ABC):
     def _configure_capture_settings(self) -> None:
         info = self.cam.get_camera_information()
         conf = info.camera_configuration
-        w, h = int(conf.resolution.width), int(conf.resolution.height)
+        actual_w, actual_h = int(conf.resolution.width), int(conf.resolution.height)
         actual_fps = int(conf.fps)
-        if self.rotation in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE):
-            w, h = h, w  # the frames this camera will hand out are rotated
 
-        # A requested resolution/fps that the camera did not honour must be an error, not a
-        # silent override: robots publish observation shapes from the *config* before connecting,
-        # so a mismatch would surface much later as a confusing frame-shape failure.
-        requested = {"width": self.width, "height": self.height, "fps": self.fps}
-        actual = {"width": w, "height": h, "fps": actual_fps}
-        mismatched = {
-            k: (v, actual[k]) for k, v in requested.items() if v is not None and int(v) != actual[k]
-        }
-        if mismatched:
-            detail = ", ".join(
-                f"{k}: requested {req}, camera opened {act}" for k, (req, act) in mismatched.items()
-            )
-            raise ValueError(
-                f"{self}: camera did not honour the requested stream settings ({detail}). "
-                f"Set resolution={self.resolution_name!r} together with matching width/height/fps, or "
-                "leave width/height/fps unset to accept the camera's own mode."
-            )
+        if self.fps is None:
+            self.fps = actual_fps
 
-        self.width, self.height, self.fps = w, h, actual_fps
+        # self.width/height describe the frames handed out (after rotation)
+        # self.capture_width/height describe the frames the SDK returns (before rotation)
+        rotated = self.rotation in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        if not self.width or not self.height:
+            self.width, self.height = (actual_h, actual_w) if rotated else (actual_w, actual_h)
         self.capture_width, self.capture_height = (
-            (h, w) if self.rotation in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE) else (w, h)
+            (self.height, self.width) if rotated else (self.width, self.height)
         )
 
-        cal = self._read_calibration(conf)
+        # A requested fps that the camera did not honour must be an error
+        if self.fps != actual_fps:
+            raise ValueError(
+                f"{self}: requested fps={self.fps}, camera opened {actual_fps}. "
+                f"Pick an fps that resolution={self.resolution_name!r} supports, or leave fps unset."
+            )
+
+        # Make sure the requested capture dimensions are equal or less than the camera's initialized
+        # resolution and have the same proportion
+        if self.capture_width > actual_w or self.capture_height > actual_h:
+            raise ValueError(
+                f"{self}: requested width={self.capture_width} or height={self.capture_height} (before "
+                f"rotation) exceeds the camera's initialized resolution width={actual_w} or "
+                f"height={actual_h}. "
+            )
+        if self.capture_width * actual_h != actual_w * self.capture_height:
+            raise ValueError(
+                f"{self}: requested width={self.capture_width} and height={self.capture_height} (before "
+                f"rotation) have a different proportion than the camera's initialized resolution "
+                f"width={actual_w} and height={actual_h}. "
+            )
+
+        self.capture_resolution = sl.Resolution(self.capture_width, self.capture_height)
+
+        # Calibration scaled by the SDK to the retrieved size
+        scaled_conf = self.cam.get_camera_information(self.capture_resolution).camera_configuration
+        cal = self._read_calibration(scaled_conf)
         fx, fy, cx, cy = float(cal.fx), float(cal.fy), float(cal.cx), float(cal.cy)
         # calibration describes the sensor frame; rotate it with the image (capture_width/height)
         cw, ch = self.capture_width, self.capture_height

@@ -110,12 +110,14 @@ class ZedCamera(ZedCameraBase):
         return self.cam.grab(self.runtime)
 
     def _retrieve_color(self) -> NDArray[Any]:
-        self.cam.retrieve_image(self._img_mat, self._color_view)
+        self.cam.retrieve_image(self._img_mat, self._color_view, resolution=self.capture_resolution)
         return self._img_mat.get_data()
 
     def _retrieve_depth(self) -> NDArray[Any]:
         # uint16 mm regardless of coordinate_units, invalid pixels already 0
-        self.cam.retrieve_measure(self._depth_mat, sl.MEASURE.DEPTH_U16_MM)
+        self.cam.retrieve_measure(
+            self._depth_mat, sl.MEASURE.DEPTH_U16_MM, resolution=self.capture_resolution
+        )
         return self._depth_mat.get_data()
 
     def _read_calibration(self, camera_configuration: Any) -> Any:

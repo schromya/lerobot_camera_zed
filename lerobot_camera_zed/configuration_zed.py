@@ -29,8 +29,9 @@ class ZedCameraConfig(CameraConfig):
     """Configuration for Stereolabs ZED cameras (via the ZED SDK Python API `pyzed`).
 
     The camera is identified by serial number (recommended); omit it to open the
-    first available ZED. The `resolution` string drives width/height/fps, so leave
-    `fps`/`width`/`height` as None unless you want to override the reported values.
+    first available ZED. `resolution` selects the sensor mode, which fixes the field of view and
+    the resolution depth is computed at. `width`/`height` optionally downscale the frames handed
+    out; leave them (and `fps`) as None for default configuration.
 
     Attributes:
         serial_number: ZED serial number. None → first available device.
@@ -56,6 +57,10 @@ class ZedCameraConfig(CameraConfig):
             ("H264" | "H265" | "H264_LOSSLESS" | "H265_LOSSLESS" | "LOSSLESS"). The default "H264"
             is lossy; use "LOSSLESS" for a bit-exact archive. On a Jetson Orin Nano the lossy modes
             write empty files for GMSL cameras (no hardware encoder), so use "LOSSLESS" there.
+        width / height: output frame size *after* `rotation`; set both or neither. Must not exceed
+            the `resolution` mode and must keep its aspect ratio. Depth and `intrinsics` are scaled
+            to the same size.
+        fps: must be a rate the `resolution` mode supports; None accepts the camera's rate.
     """
 
     serial_number: int | None = None
@@ -83,8 +88,5 @@ class ZedCameraConfig(CameraConfig):
                 "from the rectified stereo pair, so the depth map would not align with the raw image."
             )
 
-        values = (self.fps, self.width, self.height)
-        if any(v is not None for v in values) and any(v is None for v in values):
-            raise ValueError(
-                "For `fps`, `width` and `height`, either all of them need to be set, or none of them."
-            )
+        if (self.width is None) != (self.height is None):
+            raise ValueError("`width` and `height` must be set together (or both left unset).")

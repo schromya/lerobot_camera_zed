@@ -90,7 +90,7 @@ class ZedOneCamera(ZedCameraBase):
         return self.cam.grab()
 
     def _retrieve_color(self) -> NDArray[Any]:
-        self.cam.retrieve_image(self._img_mat, self._color_view)
+        self.cam.retrieve_image(self._img_mat, self._color_view, resolution=self.capture_resolution)
         return self._img_mat.get_data()
 
     def _read_calibration(self, camera_configuration: Any) -> Any:

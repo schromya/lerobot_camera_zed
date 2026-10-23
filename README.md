@@ -70,9 +70,10 @@ with ZedCamera(config) as camera:
 
 ## Choose a resolution
 
-`resolution` is what drives width, height and frame rate. Leave it at `"AUTO"` unless you have a
-reason not to: `AUTO` opens each model in its native mode, and the supported mode list differs per
-model.
+`resolution` selects the sensor mode, which fixes the field of view and the resolution depth is
+computed at. Leave it at `"AUTO"` unless you have a reason not to: `AUTO` opens each model in its
+native mode, and the supported mode list differs per model. `width`/`height` optionally downscale
+the frames handed out.
 
 | Camera family               | Supported modes                                                                                       |
 | --------------------------- | ------------------------------------------------------------------------------------------------------ |
@@ -81,17 +82,19 @@ model.
 | ZED X HDR family            | **Only open at their native `1920x1536`** — `HD1080`, `HD1200` and `SVGA` are all rejected, use `AUTO` |
 
 > [!TIP]
-> Standalone, leave `fps`, `width` and `height` unset and let the camera report its own mode. Set
-> either all three or none of them — a lone `fps` raises a `ValueError`. `fps` is *requested* from
-> the SDK, so it is honoured only when the mode supports that rate: `HD2K` on a ZED 2i runs at 15 fps
-> and nothing lower, and asking for less makes `connect()` raise rather than silently capture at 15.
+> Standalone, leave `fps`, `width` and `height` unset for default configuration. `width` and
+> `height` are the output frame size *after* `rotation`; set both or neither. They must not exceed
+> the `resolution` mode and must keep its aspect ratio, e.g. `resolution: HD1200, width: 640,
+> height: 400`. Depth and `intrinsics` are scaled to the same size. `fps` is independent and is
+> *requested* from the SDK, so it is honoured only when the mode supports that rate: `HD2K` on a
+> ZED 2i runs at 15 fps and nothing lower, and asking for less makes `connect()` raise rather than
+> silently capture at 15.
 
 > [!WARNING]
 > Inside a **robot** config you must set `width`, `height` and `fps` explicitly (for example
 > `width: 1920, height: 1200, fps: 30`), because robots publish their observation features before
-> the cameras connect, so the shape cannot be filled in at connect time. The values must match the
-> mode the camera actually opens, otherwise `connect()` raises rather than silently capturing at a
-> different resolution.
+> the cameras connect, so the shape cannot be filled in at connect time. `fps` must be a rate the
+> mode supports and `width`/`height` must fit the mode as above, otherwise `connect()` raises.
 
 ## Configuration reference
 
@@ -110,7 +113,7 @@ model.
 | `warmup_s`                 | `1`        | Seconds of warmup grabbing before `connect()` returns                                                                                                                   |
 | `svo_record_path`          | `None`     | Record the full sensor stream to this `.svo2` file while connected — see [SVO recording](#svo-recording)                                                                |
 | `svo_compression`          | `"H264"`   | `H264` / `H265` / `H264_LOSSLESS` / `H265_LOSSLESS` / `LOSSLESS`                                                                                                        |
-| `fps` / `width` / `height` | `None`     | Inherited fields — set all three or none; with `resolution` set, prefer leaving all three unset                                                                         |
+| `fps` / `width` / `height` | `None`     | Inherited fields — `width`/`height`: output size after `rotation`, set both or neither, must fit the mode and keep its aspect ratio; `fps`: a rate the mode supports |
 
 `ZedOneCameraConfig` is the same minus `use_rgb`, `use_depth` and `depth_mode`.
 

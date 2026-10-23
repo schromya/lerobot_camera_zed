@@ -45,6 +45,10 @@ class ZedOneCameraConfig(CameraConfig):
             (or call `start_svo_recording()` at runtime).
         svo_compression: sl.SVO_COMPRESSION_MODE name for `svo_record_path`; the default "H264"
             is lossy, "LOSSLESS" is bit-exact.
+        width / height: output frame size *after* `rotation`; set both or neither. Must not exceed
+            the `resolution` mode and must keep its aspect ratio. `intrinsics` are scaled to the
+            same size.
+        fps: must be a rate the `resolution` mode supports; None accepts the camera's rate.
     """
 
     serial_number: int | None = None
@@ -60,8 +64,5 @@ class ZedOneCameraConfig(CameraConfig):
         self.color_mode = ColorMode(self.color_mode)
         self.rotation = Cv2Rotation(self.rotation)
 
-        values = (self.fps, self.width, self.height)
-        if any(v is not None for v in values) and any(v is None for v in values):
-            raise ValueError(
-                "For `fps`, `width` and `height`, either all of them need to be set, or none of them."
-            )
+        if (self.width is None) != (self.height is None):
+            raise ValueError("`width` and `height` must be set together (or both left unset).")
