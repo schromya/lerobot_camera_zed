@@ -92,11 +92,11 @@ def test_config_has_no_depth_settings():
 
 @pytest.mark.parametrize(
     "kwargs",
-    [{"fps": 30}, {"width": 1920}, {"height": 1200}, {"fps": 30, "width": 1920}],
-    ids=["fps", "width", "height", "fps_width"],
+    [{"width": 1920}, {"height": 1200}, {"fps": 30, "width": 1920}],
+    ids=["width", "height", "fps_width"],
 )
 def test_config_partial_capture_settings_raise(kwargs):
-    with pytest.raises(ValueError, match="either all of them"):
+    with pytest.raises(ValueError, match="must be set together"):
         ZedOneCameraConfig(**kwargs)
 
 
@@ -278,11 +278,19 @@ def test_connect_forwards_configured_fps(zed_one):
 def test_connect_rejects_stream_settings_the_camera_ignores(zed_one):
     camera = zed_one.camera(fps=CAPTURE_FPS // 2, width=CAPTURE_WIDTH, height=CAPTURE_HEIGHT)
 
-    with pytest.raises(ValueError, match="did not honour"):
+    with pytest.raises(ValueError, match="requested fps"):
         camera.connect(warmup=False)
 
     assert not camera.is_connected
     assert zed_one.last_camera.close_count == 1
+
+
+def test_downscale(zed_one):
+    """`sl.CameraOne.retrieve_image` is asked for the smaller size; its flat calibration scales too."""
+    w, h = CAPTURE_WIDTH // 2, CAPTURE_HEIGHT // 2
+    with zed_one.camera(width=w, height=h) as camera:
+        assert camera.read().shape == (h, w, 3)
+        assert camera.intrinsics["fx"] == RECTIFIED_FX / 2
 
 
 def test_connect_without_serial_number_opens_first_device(zed_one):

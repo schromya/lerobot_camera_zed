@@ -118,6 +118,14 @@ class FakeTimeReference(Enum):
     CURRENT = 1
 
 
+class FakeSize:
+    """Stand-in for `sl.Resolution` (a width/height pair)."""
+
+    def __init__(self, width=0, height=0):
+        self.width = width
+        self.height = height
+
+
 class FakeMat:
     """Stand-in for `sl.Mat`: a reusable buffer the SDK writes each frame into."""
 
@@ -217,16 +225,58 @@ class _FakeCameraBase:
         # Recorded rather than asserted: an assert inside a fake would fire on the read thread.
         self.requested_views = []
         self.requested_measures = []
+        # (width, height) asked of retrieve_image / retrieve_measure, None when left to the SDK
+        self.requested_sizes = []
         self.time_references = []
 
         # The SDK hands back a view on an internal buffer, so allocate these once. `served_size`
         # lets a test hand out frames that do not match the mode the camera reports.
+        self.served_size = served_size
         served_w, served_h = served_size or (width, height)
-        self._color = np.zeros((served_h, served_w, 4), dtype=np.uint8)
-        self._color[:, :] = BGRA_PIXEL
+        self._color = self._make_color(served_w, served_h)
+        self._depth = self._make_depth(served_w, served_h)
+        self._resized = {}  # (kind, w, h) -> buffer, for retrieves below the camera mode
+
+    @staticmethod
+    def _make_color(w, h):
+        color = np.zeros((h, w, 4), dtype=np.uint8)
+        color[:, :] = BGRA_PIXEL
+        return color
+
+    @staticmethod
+    def _make_depth(w, h):
+        depth = np.full((h, w), DEPTH_MM, dtype=np.uint16)
         # The SDK collapses occluded / too-far / too-close pixels to 0 in DEPTH_U16_MM.
-        self._depth = np.full((served_h, served_w), DEPTH_MM, dtype=np.uint16)
-        self._depth[0, 0:3] = INVALID_DEPTH
+        depth[0, 0:3] = INVALID_DEPTH
+        return depth
+
+    def _serve(self, kind, resolution):
+        """The buffer for a retrieve: the camera mode, or the downscaled size that was asked for."""
+        size = None if resolution is None else (resolution.width, resolution.height)
+        self.requested_sizes.append(size)
+        native = self._color if kind == "color" else self._depth
+        if self.served_size is not None or size is None or size == (self.width, self.height):
+            return native
+        if size[0] > self.width or size[1] > self.height:
+            raise AssertionError(f"retrieve at {size} exceeds the camera mode {(self.width, self.height)}")
+        key = (kind, *size)
+        if key not in self._resized:
+            make = self._make_color if kind == "color" else self._make_depth
+            self._resized[key] = make(*size)
+        return self._resized[key]
+
+    def _calibration(self, resizer):
+        """Rectified and raw pinhole parameters, scaled like the SDK does for a `resizer` size."""
+        sx = resizer.width / self.width if resizer is not None else 1.0
+        sy = resizer.height / self.height if resizer is not None else 1.0
+        rectified = SimpleNamespace(
+            fx=RECTIFIED_FX * sx, fy=701.0 * sy, cx=self.width / 2 * sx, cy=self.height / 2 * sy
+        )
+        raw = SimpleNamespace(
+            fx=UNRECTIFIED_FX * sx, fy=531.0 * sy, cx=(self.width / 2 + 9) * sx, cy=(self.height / 2 + 7) * sy
+        )
+        size = (resizer.width, resizer.height) if resizer is not None else (self.width, self.height)
+        return SimpleNamespace(width=size[0], height=size[1]), rectified, raw
 
     def open(self, init_parameters):
         self.init_parameters = init_parameters
@@ -241,9 +291,9 @@ class _FakeCameraBase:
         time.sleep(self.grab_delay_s)  # keep the background read thread from spinning flat out
         return self.grab_status
 
-    def retrieve_image(self, mat, view):
+    def retrieve_image(self, mat, view, mem_type=None, resolution=None):
         self.requested_views.append(view)
-        mat.data = self._color
+        mat.data = self._serve("color", resolution)
         return FakeErrorCode.SUCCESS
 
     def get_timestamp(self, time_reference):
@@ -271,20 +321,15 @@ class FakeCamera(_FakeCameraBase):
         # One entry per grab() call, holding the RuntimeParameters it received.
         self.grab_runtime_parameters = []
 
-    def get_camera_information(self):
+    def get_camera_information(self, resizer=None):
+        resolution, rectified, raw = self._calibration(resizer)
         return SimpleNamespace(
             input_type=self.input_type,
             camera_configuration=SimpleNamespace(
-                resolution=SimpleNamespace(width=self.width, height=self.height),
+                resolution=resolution,
                 fps=self.fps,
-                calibration_parameters=SimpleNamespace(
-                    left_cam=SimpleNamespace(fx=RECTIFIED_FX, fy=701.0, cx=self.width / 2, cy=self.height / 2)
-                ),
-                calibration_parameters_raw=SimpleNamespace(
-                    left_cam=SimpleNamespace(
-                        fx=UNRECTIFIED_FX, fy=531.0, cx=self.width / 2 + 9, cy=self.height / 2 + 7
-                    )
-                ),
+                calibration_parameters=SimpleNamespace(left_cam=rectified),
+                calibration_parameters_raw=SimpleNamespace(left_cam=raw),
             ),
         )
 
@@ -292,9 +337,9 @@ class FakeCamera(_FakeCameraBase):
         self.grab_runtime_parameters.append(runtime_parameters)
         return self._grab()
 
-    def retrieve_measure(self, mat, measure):
+    def retrieve_measure(self, mat, measure, mem_type=None, resolution=None):
         self.requested_measures.append(measure)
-        mat.data = self._depth
+        mat.data = self._serve("depth", resolution)
         return FakeErrorCode.SUCCESS
 
 
@@ -307,19 +352,16 @@ class FakeCameraOne(_FakeCameraBase):
         # monocular API has no RuntimeParameters, so these must all be 0.
         self.grab_arg_counts = []
 
-    def get_camera_information(self):
+    def get_camera_information(self, resizer=None):
         # `CameraOne` exposes a *flat* calibration (no `.left_cam`): there is a single sensor.
+        resolution, rectified, raw = self._calibration(resizer)
         return SimpleNamespace(
             input_type=self.input_type,
             camera_configuration=SimpleNamespace(
-                resolution=SimpleNamespace(width=self.width, height=self.height),
+                resolution=resolution,
                 fps=self.fps,
-                calibration_parameters=SimpleNamespace(
-                    fx=RECTIFIED_FX, fy=701.0, cx=self.width / 2, cy=self.height / 2
-                ),
-                calibration_parameters_raw=SimpleNamespace(
-                    fx=UNRECTIFIED_FX, fy=531.0, cx=self.width / 2 + 9, cy=self.height / 2 + 7
-                ),
+                calibration_parameters=rectified,
+                calibration_parameters_raw=raw,
             ),
         )
 
@@ -357,6 +399,7 @@ def make_fake_sl(
         MEASURE=FakeMeasure,
         TIME_REFERENCE=FakeTimeReference,
         Mat=FakeMat,
+        Resolution=FakeSize,
         InitParameters=FakeInitParameters,
         InitParametersOne=FakeInitParametersOne,
         RuntimeParameters=FakeRuntimeParameters,

@@ -113,16 +113,14 @@ def test_config_depth_with_unrectified_is_rejected():
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"fps": 30},
         {"width": 1280},
         {"height": 720},
         {"fps": 30, "width": 1280},
-        {"width": 1280, "height": 720},
     ],
-    ids=["fps", "width", "height", "fps_width", "width_height"],
+    ids=["width", "height", "fps_width"],
 )
 def test_config_partial_capture_settings_raise(kwargs):
-    with pytest.raises(ValueError, match="either all of them"):
+    with pytest.raises(ValueError, match="must be set together"):
         ZedCameraConfig(**kwargs)
 
 
@@ -130,6 +128,11 @@ def test_config_full_capture_settings_are_allowed():
     config = ZedCameraConfig(fps=30, width=1280, height=720)
 
     assert (config.fps, config.width, config.height) == (30, 1280, 720)
+
+
+def test_config_fps_and_size_are_independent():
+    assert ZedCameraConfig(fps=30).fps == 30
+    assert (ZedCameraConfig(width=1280, height=720).fps) is None
 
 
 @pytest.mark.parametrize(
@@ -312,14 +315,13 @@ def test_connect_forwards_configured_fps(zed):
 
 
 def test_connect_rejects_stream_settings_the_camera_ignores(zed):
-    """A requested fps/width/height the camera does not honour must fail loudly at connect.
+    """A requested fps the camera does not honour must fail loudly at connect.
 
-    Robots publish observation shapes from the config before connecting, so silently adopting
-    the camera's own mode would surface later as a confusing frame-shape mismatch.
+    Frames cannot be resampled in time, and robots publish the config's fps before connecting.
     """
     camera = zed.camera(fps=CAPTURE_FPS // 2, width=CAPTURE_WIDTH, height=CAPTURE_HEIGHT)
 
-    with pytest.raises(ValueError, match="did not honour"):
+    with pytest.raises(ValueError, match="requested fps"):
         camera.connect(warmup=False)
 
     assert not camera.is_connected
@@ -327,6 +329,49 @@ def test_connect_rejects_stream_settings_the_camera_ignores(zed):
     # the requested settings survive for a retry; nothing auto-detected leaks out of the failure
     assert (camera.width, camera.height, camera.fps) == (CAPTURE_WIDTH, CAPTURE_HEIGHT, CAPTURE_FPS // 2)
     assert camera.intrinsics is None
+
+
+def test_downscale(zed):
+    """A smaller width/height of the same aspect ratio is retrieved at that size, depth included."""
+    w, h = CAPTURE_WIDTH // 2, CAPTURE_HEIGHT // 2
+    with zed.camera(width=w, height=h, use_depth=True) as camera:
+        frame = camera.read()
+        depth = camera.read_depth()
+
+        assert (camera.width, camera.height) == (w, h)
+        assert (camera.capture_width, camera.capture_height) == (w, h)
+        assert camera.fps == CAPTURE_FPS
+        assert frame.shape == (h, w, 3)
+        assert depth.shape == (h, w, 1)
+        assert set(zed.last_camera.requested_sizes) == {(w, h)}
+        # intrinsics describe the downscaled frames, not the sensor mode
+        assert camera.intrinsics == {"fx": RECTIFIED_FX / 2, "fy": 701.0 / 2, "cx": w / 2, "cy": h / 2}
+
+
+def test_downscale_with_rotation(zed):
+    """width/height are the size after rotation; the SDK is asked for the size before it."""
+    w, h = CAPTURE_WIDTH // 2, CAPTURE_HEIGHT // 2
+    with zed.camera(width=h, height=w, rotation=Cv2Rotation.ROTATE_90, use_depth=True) as camera:
+        assert camera.read().shape == (w, h, 3)
+        assert camera.read_depth().shape == (w, h, 1)
+        assert set(zed.last_camera.requested_sizes) == {(w, h)}
+
+
+@pytest.mark.parametrize(
+    ("width", "height", "match"),
+    [
+        (CAPTURE_WIDTH * 2, CAPTURE_HEIGHT * 2, "exceeds"),
+        (CAPTURE_WIDTH // 2, CAPTURE_HEIGHT // 3, "different proportion"),
+    ],
+    ids=["upscale", "aspect_ratio"],
+)
+def test_connect_rejects_sizes_the_sdk_cannot_downscale_to(zed, width, height, match):
+    camera = zed.camera(width=width, height=height)
+
+    with pytest.raises(ValueError, match=match):
+        camera.connect(warmup=False)
+
+    assert not camera.is_connected
 
 
 def test_connect_without_depth_disables_depth_mode(zed):
@@ -1092,7 +1137,7 @@ def test_failed_connect_clears_the_svo_recording_flag(zed, tmp_path):
         height=CAPTURE_HEIGHT,
     )
 
-    with pytest.raises(ValueError, match="did not honour"):
+    with pytest.raises(ValueError, match="requested fps"):
         camera.connect(warmup=False)
 
     assert camera._svo_recording is False
